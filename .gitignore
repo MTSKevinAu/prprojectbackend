@@ -1,0 +1,44 @@
+# .NET build output
+**/bin/
+**/obj/
+artifacts/
+publish/
+
+# Visual Studio user state
+.vs/
+*.user
+*.rsuser
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code local settings
+.vscode/
+
+# Test and coverage output
+TestResults/
+coverage/
+coverage.*
+*.coverage
+*.coveragexml
+
+# Runtime logs
+logs/
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+secrets.json
+
+# Package and tooling caches
+packages/
+.nuget/
+.dotnet/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
