@@ -1,9 +1,13 @@
 using System.Security.Claims;
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using ClosedXML.Excel;
 using medxbackend.Data;
 using medxbackend.Models;
+using medxbackend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
@@ -16,11 +20,13 @@ namespace medxbackend.Controllers;
 public sealed class PatientController : ControllerBase
 {
     private readonly DbHelper _dbHelper;
+    private readonly IPatientDetailsExportService _exportService;
 
     /// <summary>初始化患者控制器及数据库访问帮助器。</summary>
-    public PatientController(DbHelper dbHelper)
+    public PatientController(DbHelper dbHelper, IPatientDetailsExportService exportService)
     {
         _dbHelper = dbHelper;
+        _exportService = exportService;
     }
 
     /// <summary>按请求条件获取下一笔患者资料。</summary>
@@ -82,20 +88,26 @@ public sealed class PatientController : ControllerBase
     {
         var results = await _dbHelper.QueryAsync(
             """
-            SELECT dailyno, inputtype_a, inputtype_b, status, all_fields_equal,
-                   differing_fields, formtype_a, formtype_b
+             SELECT dailyno, patientnameen, patientnamechi, productcode, "repeat", refcustordr,
+                 inputtype_a, inputtype_b, status, all_fields_equal, differing_fields,
+                 formtype_a, formtype_b
             FROM public.get_patientdetails_field_differences()
             ORDER BY dailyno DESC
             """,
             reader => new PatientDetailsFieldDifference(
                 reader.GetString(0),
-                reader.GetInt32(1),
-                reader.GetInt32(2),
-                reader.GetString(3),
-                reader.GetBoolean(4),
-                reader.IsDBNull(5) ? Array.Empty<string>() : reader.GetFieldValue<string[]>(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.IsDBNull(7) ? null : reader.GetString(7)
+              reader.IsDBNull(1) ? null : reader.GetString(1),
+              reader.IsDBNull(2) ? null : reader.GetString(2),
+              reader.IsDBNull(3) ? null : reader.GetFieldValue<string[]>(3),
+                            reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                            reader.IsDBNull(5) ? null : reader.GetString(5),
+                                reader.GetInt32(6),
+                            reader.GetInt32(7),
+                            reader.GetString(8),
+                            reader.GetBoolean(9),
+                            reader.IsDBNull(10) ? null : reader.GetFieldValue<string[]>(10),
+                            reader.IsDBNull(11) ? null : reader.GetString(11),
+                            reader.IsDBNull(12) ? null : reader.GetString(12)
                 ),
             cancellationToken: cancellationToken);
 
@@ -108,11 +120,7 @@ public sealed class PatientController : ControllerBase
         [FromBody] ExportPatientDetailsFinalRequest request,
         CancellationToken cancellationToken = default)
     {
-        var statusValues = request.Statuses?
-            .SelectMany(status => (status ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-            .Where(status => !string.IsNullOrWhiteSpace(status))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray() ?? [];
+        var statusValues = PatientDetailsExportService.NormalizeStatuses(request.Statuses);
 
         if (statusValues.Length == 0)
         {
@@ -125,23 +133,12 @@ public sealed class PatientController : ControllerBase
             return BadRequest(new { message = "format 只支持 excel 或 csv" });
         }
 
-        var statusParameters = statusValues
-            .Select((status, index) => Parameter($"status{index}", status))
-            .ToArray();
-        var statusPlaceholders = string.Join(", ", statusValues
-            .Select((_, index) => $"@status{index}"));
-        var rows = await _dbHelper.QueryAsync(
-            $"SELECT * FROM public.patientdetails_final WHERE status IN ({statusPlaceholders}) ORDER BY dailyno",
-            MapCurrentRow,
-            statusParameters,
-            cancellationToken);
+        var rows = await _exportService.GetRowsAsync(statusValues, cancellationToken);
 
         if (rows.Count == 0)
         {
             return NotFound(new { message = "没有符合状态的最终患者资料" });
         }
-
-        AssignExportCentreIds(rows);
 
         var columns = rows[0].Keys.ToArray();
         var filenameStatus = string.Join("_", statusValues.Select(status => string.Concat(status.Where(character =>
@@ -170,18 +167,43 @@ public sealed class PatientController : ControllerBase
 
         using var workbook = new XLWorkbook();
         var worksheet = workbook.Worksheets.Add("patientdetails_final");
-        for (var columnIndex = 0; columnIndex < columns.Length; columnIndex++)
+        var excelHeaders = new[]
         {
-            worksheet.Cell(1, columnIndex + 1).Value = columns[columnIndex];
+            "Lab No.",
+            "Daily No.",
+            "English Name",
+            "Chinese Name",
+            "Product Code",
+            "Date of Birth",
+            "Maternal Age",
+            "Gestational Week",
+            "Pregnancy",
+            "Ethnic Origin",
+            "ID/Passport No.",
+            "Clinic Code",
+            "Sample Type",
+            "Patient Ref No.",
+            "Date Received",
+            "Date Collected",
+            "TBC Status",
+            "Hold Status",
+            "History of Abortion",
+            "IVF",
+            "Remarks"
+        };
+
+        for (var columnIndex = 0; columnIndex < excelHeaders.Length; columnIndex++)
+        {
+            worksheet.Cell(1, columnIndex + 1).Value = excelHeaders[columnIndex];
         }
 
         for (var rowIndex = 0; rowIndex < rows.Count; rowIndex++)
         {
-            for (var columnIndex = 0; columnIndex < columns.Length; columnIndex++)
+            for (var columnIndex = 0; columnIndex < excelHeaders.Length; columnIndex++)
             {
-                var value = rows[rowIndex][columns[columnIndex]];
+                var value = rows[rowIndex].GetValueOrDefault(excelHeaders[columnIndex]);
                 worksheet.Cell(rowIndex + 2, columnIndex + 1).Value =
-                    XLCellValue.FromObject(FormatExcelValue(value), CultureInfo.InvariantCulture);
+                    XLCellValue.FromObject(value, CultureInfo.InvariantCulture);
             }
         }
 
@@ -217,7 +239,7 @@ public sealed class PatientController : ControllerBase
                     p_patientnameen => @patientnameen::varchar,
                     p_patientnamechi => @patientnamechi::varchar,
                     p_gender => @gender::varchar,
-                    p_dateofbirth => @dateofbirth::date,
+                    p_dateofbirth => @dateofbirth::timestamp without time zone,
                     p_age => @age::integer,
                     p_hkidno => @hkidno::varchar,
                     p_passportno => @passportno::varchar,
@@ -323,7 +345,7 @@ public sealed class PatientController : ControllerBase
                     p_patientnameen => @patientnameen::varchar,
                     p_patientnamechi => @patientnamechi::varchar,
                     p_gender => @gender::varchar,
-                    p_dateofbirth => @dateofbirth::date,
+                    p_dateofbirth => @dateofbirth::timestamp without time zone,
                     p_age => @age::integer,
                     p_hkidno => @hkidno::varchar,
                     p_passportno => @passportno::varchar,
@@ -563,17 +585,100 @@ public sealed class PatientController : ControllerBase
         return Ok(patients);
     }
 
+    /// <summary>按每日编号获取最终患者的基本资料。</summary>
+    [HttpGet("getPatientdetailsFinalByDailyno")]
+    public async Task<IActionResult> GetPatientDetailsFinalByDailyNo(
+        [FromQuery] string dailyNo,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(dailyNo))
+        {
+            return BadRequest(new { message = "dailyNo 不能为空" });
+        }
+
+        var patients = await _dbHelper.QueryAsync(
+            """
+            SELECT
+                dailyno,
+                dateofbirth::date AS dateofbirth,
+                COALESCE(NULLIF(btrim(patientnamechi), ''), patientnameen) AS patientname,
+                gender,
+                hkidno
+            FROM public.patientdetails_final
+            WHERE dailyno = @dailyno
+            """,
+            reader => new
+            {
+                dailyno = reader.GetString(0),
+                dateOfBirth = reader.IsDBNull(1) ? (DateTime?)null : reader.GetDateTime(1),
+                patientName = reader.IsDBNull(2) ? null : reader.GetString(2),
+                gender = reader.IsDBNull(3) ? null : reader.GetString(3),
+                hkidno = reader.IsDBNull(4) ? null : reader.GetString(4)
+            },
+            [Parameter("dailyno", dailyNo.Trim())],
+            cancellationToken);
+
+        if (patients.Count == 0)
+        {
+            return NotFound(new { message = "找不到对应的最终患者资料" });
+        }
+
+        if (patients.Count > 1)
+        {
+            return Conflict(new { message = "找到多笔最终患者资料，请提供更多筛选条件" });
+        }
+
+        return Ok(patients[0]);
+    }
+
+    /// <summary>按每日编号获取最终患者资料的全部字段，保留原基本资料查询接口。</summary>
+    [HttpGet("getPatientdetailsFinalFullByDailyno")]
+    [EndpointSummary("Get all final patient fields by dailyNo")]
+    [ProducesResponseType(typeof(JsonElement), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> GetPatientDetailsFinalFullByDailyNo(
+        [FromQuery, Required, StringLength(255)] string dailyNo,
+        [FromServices] IPatientDetailsFinalQueryService service,
+        [FromServices] ILogger<PatientController> logger,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        Response.Headers.Pragma = "no-cache";
+        if (string.IsNullOrWhiteSpace(dailyNo) || dailyNo.Length > 255)
+        {
+            ModelState.AddModelError("dailyNo", "dailyNo 不能为空且不能超过 255 个字符。");
+            return ValidationProblem(ModelState);
+        }
+
+        try
+        {
+            var patients = await service.GetByDailyNo(dailyNo.Trim(), cancellationToken);
+            return patients.Count switch
+            {
+                0 => Problem(statusCode: StatusCodes.Status404NotFound, title: "找不到对应的最终患者资料。"),
+                1 => Ok(patients[0]),
+                _ => Problem(statusCode: StatusCodes.Status409Conflict,
+                    title: "找到多笔最终患者资料，无法通过 dailyNo 唯一确定患者。")
+            };
+        }
+        catch (NpgsqlException exception)
+        {
+            logger.LogError(exception, "Unable to retrieve full final patient details.");
+            return Problem(statusCode: StatusCodes.Status500InternalServerError, title: "获取最终患者资料失败。");
+        }
+    }
+
     /// <summary>按每日编号获取上一笔或下一笔患者资料。</summary>
     [HttpPost("getAdjacentPatientdetails")]
     public async Task<IActionResult> GetAdjacentPatientDetails(
         [FromBody] GetAdjacentPatientDetailsRequest request,
         CancellationToken cancellationToken)
     {
-        if (!TryGetUserId(out var userId))
-        {
-            return Unauthorized(new { message = "用户 ID 无效" });
-        }
-
         var direction = request.Direction?.Trim().ToLowerInvariant();
         if (direction is not ("previous" or "next"))
         {
@@ -589,8 +694,7 @@ public sealed class PatientController : ControllerBase
                     p_dailyno => @dailyno::varchar,
                     p_direction => @direction::varchar,
                     p_formtype => @formtype::varchar,
-                    p_inputtype => @inputtype::integer,
-                    p_userid => @userid::integer
+                    p_inputtype => @inputtype::integer
                 )
                 """,
                 MapCurrentRow,
@@ -598,8 +702,7 @@ public sealed class PatientController : ControllerBase
                     Parameter("dailyno", request.DailyNo?.Trim()),
                     Parameter("direction", direction),
                     Parameter("formtype", request.FormType),
-                    Parameter("inputtype", request.InputType),
-                    Parameter("userid", userId)
+                    Parameter("inputtype", request.InputType)
                 ],
                 cancellationToken);
 
@@ -650,6 +753,79 @@ public sealed class PatientController : ControllerBase
         return Ok(patients);
     }
 
+    /// <summary>按表单类型和日期获取每日编号缺口范围。</summary>
+    [HttpPost("getPatientdetailsDailynoGaps")]
+    public async Task<IActionResult> GetPatientDetailsDailyNoGaps(
+        [FromBody] GetPatientDetailsDailyNoGapsRequest request,
+        CancellationToken cancellationToken)
+    {
+        var requestedFormTypes = request.FormTypes;
+        if (requestedFormTypes is null
+            || requestedFormTypes.Count == 0
+            || requestedFormTypes.Any(formType =>
+                string.IsNullOrWhiteSpace(formType) || formType.Trim().Length > 2))
+        {
+            return BadRequest(new { message = "formtypes 至少需要一个值，且每个 formtype 长度不能超过 2 个字符" });
+        }
+
+        if (request.SequenceDate is null)
+        {
+            return BadRequest(new { message = "sequence_date 不能为空" });
+        }
+
+        var formTypes = requestedFormTypes
+            .Select(formType => formType!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var results = await _dbHelper.QueryAsync(
+            """
+            WITH requested_formtypes AS
+            (
+                SELECT DISTINCT requested.formtype
+                FROM unnest(@formtypes::varchar[]) AS requested(formtype)
+            ),
+            ranges AS
+            (
+                SELECT DISTINCT gaps.formtype, range_items.range_value
+                FROM public.patientdetails_dailyno_gaps AS gaps
+                CROSS JOIN LATERAL jsonb_array_elements(gaps.missing_ranges) AS range_items(range_value)
+                WHERE gaps.formtype = ANY(@formtypes::varchar[])
+                  AND gaps.sequence_date = @sequence_date
+            )
+            SELECT
+                requested_formtypes.formtype,
+                COALESCE(
+                    jsonb_agg(ranges.range_value ORDER BY ranges.range_value::text)
+                        FILTER (WHERE ranges.range_value IS NOT NULL),
+                    '[]'::jsonb
+                )::text AS gaplist
+            FROM requested_formtypes
+            LEFT JOIN ranges ON ranges.formtype = requested_formtypes.formtype
+            GROUP BY requested_formtypes.formtype
+            ORDER BY requested_formtypes.formtype
+            """,
+            reader => new
+            {
+                FormType = reader.GetString(0),
+                GapList = reader.GetString(1)
+            },
+            [
+                Parameter("formtypes", formTypes),
+                Parameter("sequence_date", request.SequenceDate.Value)
+            ],
+            cancellationToken);
+
+        return Ok(new
+        {
+            sequenceDate = request.SequenceDate.Value,
+            gapLists = results.Select(result => new
+            {
+                formType = result.FormType,
+                gapList = JsonDocument.Parse(result.GapList).RootElement.Clone()
+            })
+        });
+    }
+
     /// <summary>按每日编号和输入类型删除患者资料。</summary>
     [HttpPost("deletePatientdetailsByDailyno")]
     public async Task<IActionResult> DeletePatientDetailsByDailyNo(
@@ -667,15 +843,48 @@ public sealed class PatientController : ControllerBase
         }
 
         var dailyNo = request.DailyNo.Trim();
-        var deletedCount = await _dbHelper.ExecuteNonQueryAsync(
-            "DELETE FROM public.patientdetails WHERE dailyno = @dailyno AND inputtype = @inputtype",
+        var deleteCounts = await _dbHelper.QueryAsync(
+            """
+            WITH deleted_patientdetails AS
+            (
+                DELETE FROM public.patientdetails
+                WHERE dailyno = @dailyno
+                  AND inputtype = @inputtype
+                RETURNING dailyno
+            ),
+            deleted_daily_nos AS
+            (
+                SELECT dailyno, count(*) AS deleted_count
+                FROM deleted_patientdetails
+                GROUP BY dailyno
+            ),
+            deleted_patientdetails_final AS
+            (
+                DELETE FROM public.patientdetails_final AS final
+                USING deleted_daily_nos AS deleted
+                WHERE final.dailyno = deleted.dailyno
+                  AND deleted.deleted_count =
+                      (SELECT count(*) FROM public.patientdetails AS remaining
+                       WHERE remaining.dailyno = deleted.dailyno)
+                RETURNING 1
+            )
+            SELECT
+                (SELECT count(*) FROM deleted_patientdetails) AS deleted_count,
+                (SELECT count(*) FROM deleted_patientdetails_final) AS deleted_final_count
+            """,
+            reader => new
+            {
+                DeletedCount = reader.GetInt64(0),
+                DeletedFinalCount = reader.GetInt64(1)
+            },
             [
                 Parameter("dailyno", dailyNo),
                 Parameter("inputtype", request.InputType)
             ],
             cancellationToken);
 
-        if (deletedCount == 0)
+        var deleteCount = deleteCounts[0];
+        if (deleteCount.DeletedCount == 0)
         {
             return NotFound(new { message = "找不到对应的患者资料" });
         }
@@ -685,6 +894,58 @@ public sealed class PatientController : ControllerBase
             message = "患者资料已删除",
             dailyNo,
             inputType = request.InputType,
+            deletedCount = deleteCount.DeletedCount,
+            deletedFinalCount = deleteCount.DeletedFinalCount
+        });
+    }
+
+    /// <summary>按每日编号及其对应输入类型批量删除患者资料。</summary>
+    [HttpPost("deletePatientdetailsByDailynos")]
+    public async Task<IActionResult> DeletePatientDetailsByDailyNos(
+        [FromBody] DeletePatientDetailsByDailyNosRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Items is null || request.Items.Length == 0)
+        {
+            return BadRequest(new { message = "items 不能为空" });
+        }
+
+        if (request.Items.Any(item => item is null || string.IsNullOrWhiteSpace(item.DailyNo)))
+        {
+            return BadRequest(new { message = "items 中的 dailyNo 不能为空" });
+        }
+
+        if (request.Items.Any(item => item!.InputType is null))
+        {
+            return BadRequest(new { message = "items 中的 inputType 不能为空" });
+        }
+
+        var items = request.Items
+            .Select(item => (DailyNo: item!.DailyNo!.Trim(), InputType: item.InputType!.Value))
+            .Distinct()
+            .ToArray();
+        var parameters = new List<NpgsqlParameter>();
+        var pairPlaceholders = string.Join(", ", items.Select((item, index) =>
+        {
+            parameters.Add(Parameter($"dailyno{index}", item.DailyNo));
+            parameters.Add(Parameter($"inputtype{index}", item.InputType));
+            return $"(@dailyno{index}, @inputtype{index})";
+        }));
+
+        var deletedCount = await _dbHelper.ExecuteNonQueryAsync(
+            $"DELETE FROM public.patientdetails WHERE (dailyno, inputtype) IN ({pairPlaceholders})",
+            parameters,
+            cancellationToken);
+
+        if (deletedCount == 0)
+        {
+            return NotFound(new { message = "找不到对应的患者资料" });
+        }
+
+        return Ok(new
+        {
+            message = "患者资料已批量删除",
+            items,
             deletedCount
         });
     }
@@ -755,7 +1016,7 @@ public sealed class PatientController : ControllerBase
                     p_patientnameen => @patientnameen::varchar,
                     p_patientnamechi => @patientnamechi::varchar,
                     p_gender => @gender::varchar,
-                    p_dateofbirth => @dateofbirth::date,
+                    p_dateofbirth => @dateofbirth::timestamp without time zone,
                     p_age => @age::integer,
                     p_hkidno => @hkidno::varchar,
                     p_passportno => @passportno::varchar,
@@ -840,6 +1101,86 @@ public sealed class PatientController : ControllerBase
         catch (PostgresException exception) when (exception.SqlState == "P0001")
         {
             return BadRequest(new { message = exception.MessageText });
+        }
+    }
+
+    /// <summary>部分更新最终患者资料，并将完整结果同步至两条录入记录。</summary>
+    [HttpPost("updatePatientdetailsFinalByDailyno")]
+    [ServiceFilter(typeof(SyncApiActionContext))]
+    [EndpointSummary("Update final patient and input records, then update previously synchronized systems selected by formtype rules")]
+    [ProducesResponseType(typeof(JsonElement), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status502BadGateway)]
+    public async Task<IActionResult> UpdatePatientDetailsFinalByDailyNo(
+        [FromBody] UpdatePatientDetailsFinalRequest request,
+        [FromServices] IPatientDetailsFinalUpdateService service,
+        [FromServices] IPatientSyncRoutingService routingService,
+        [FromServices] ILogger<PatientController> logger,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized(new { message = "Invalid User ID" });
+        }
+
+        try
+        {
+            var updatedPatient = await service.Update(request, userId, cancellationToken);
+            var response = JsonNode.Parse(updatedPatient.GetRawText()) as JsonObject
+                ?? throw new InvalidOperationException("Final patient update returned a non-object JSON result.");
+            var centreId = response["centreid"]?.GetValue<string>() ?? string.Empty;
+            var syncResults = await routingService.UpdateAlreadySynced(
+                new SyncRoutingPatient(centreId, request.FormType.Trim(), request.DailyNo.Trim()), cancellationToken);
+            var lis = syncResults.FirstOrDefault(result => result.TargetSystem == "LIS");
+            var lisResult = new LisFinalPatientUpdateResult(
+                lis is not null && lis.Operation != "Skipped",
+                lis is null || lis.Operation == "Skipped" ? "skipped" : lis.Success ? "succeeded" : "unknown",
+                lis?.Stage, lis?.HttpStatus, lis?.Message);
+            if (syncResults.Any(result => !result.Success))
+            {
+                var status = syncResults.Any(result => !result.Success && result.HttpStatus == 500)
+                    ? StatusCodes.Status500InternalServerError : StatusCodes.Status502BadGateway;
+                var problem = new ProblemDetails
+                {
+                    Status = status,
+                    Title = "本地患者资料已更新，但部分外部系统更新未完成。",
+                    Detail = "请检查 syncResults 中各系统的更新结果。"
+                };
+                problem.Extensions["localDatabaseUpdated"] = true;
+                problem.Extensions["syncResults"] = syncResults;
+                problem.Extensions["lisSyncStatus"] = lisResult.Status;
+                problem.Extensions["lisSyncStage"] = lisResult.Stage;
+                problem.Extensions["lisHttpStatus"] = lisResult.HttpStatus;
+                return StatusCode(status, problem);
+            }
+
+            response["lisSync"] = JsonSerializer.SerializeToNode(lisResult);
+            response["syncResults"] = JsonSerializer.SerializeToNode(syncResults, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            return Ok(response);
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.NoDataFound)
+        {
+            logger.LogWarning("Final patient update found no matching final record.");
+            return Problem(statusCode: StatusCodes.Status404NotFound, title: "找不到对应的最终患者资料。");
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.TooManyRows
+            || (exception.SqlState == PostgresErrorCodes.RaiseException
+                && (exception.MessageText.StartsWith("Expected exactly one patientdetails row for each inputtype 1 and 2", StringComparison.Ordinal)
+                    || exception.MessageText.StartsWith("Expected to update exactly two patientdetails rows", StringComparison.Ordinal))))
+        {
+            logger.LogWarning("Final patient update was blocked by missing or duplicate patient records.");
+            return Problem(statusCode: StatusCodes.Status409Conflict,
+                title: "最终患者记录必须唯一，且 inputtype 1、2 的录入记录必须各有一条。未完成更新。");
+        }
+        catch (NpgsqlException exception)
+        {
+            logger.LogError(exception, "Unable to update final patient details.");
+            return Problem(statusCode: StatusCodes.Status500InternalServerError, title: "更新最终患者资料失败。");
         }
     }
 
@@ -930,59 +1271,11 @@ public sealed class PatientController : ControllerBase
             null or DBNull => string.Empty,
             DateTime dateTime => dateTime.ToString("O", CultureInfo.InvariantCulture),
             DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("O", CultureInfo.InvariantCulture),
+            bool boolean => boolean ? "TRUE" : "FALSE",
             Array values => string.Join(", ", values.Cast<object?>().Select(FormatExportValue)),
             IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture) ?? string.Empty,
             _ => value.ToString() ?? string.Empty
         };
-    }
-
-    private static object? FormatExcelValue(object? value)
-    {
-        return value is Array ? FormatExportValue(value) : value is DBNull ? null : value;
-    }
-
-    private static void AssignExportCentreIds(IReadOnlyList<Dictionary<string, object?>> rows)
-    {
-        var sequenceByFormAndMonth = new Dictionary<(string FormType, string YearMonth), int>();
-
-        foreach (var row in rows)
-        {
-            var formType = row.GetValueOrDefault("formtype")?.ToString()?.Trim() ?? string.Empty;
-            var centreIdPrefix = formType switch
-            {
-                "DC" => "MC",
-                "DR" => "MR",
-                _ => formType
-            };
-            var yearMonth = row.GetValueOrDefault("datereceived") switch
-            {
-                DateTime dateTime => dateTime.ToString("yyMM", CultureInfo.InvariantCulture),
-                DateTimeOffset dateTimeOffset => dateTimeOffset.ToString("yyMM", CultureInfo.InvariantCulture),
-                _ => null
-            };
-
-            if (yearMonth is null)
-            {
-                var dailyNo = row.GetValueOrDefault("dailyno")?.ToString();
-                var dailyNoDateOffset = formType.Length;
-                if (dailyNo is not null
-                    && dailyNo.Length >= dailyNoDateOffset + 4
-                    && dailyNo.AsSpan(dailyNoDateOffset, 4).IndexOfAnyExceptInRange('0', '9') < 0)
-                {
-                    yearMonth = dailyNo.Substring(dailyNoDateOffset, 4);
-                }
-                else
-                {
-                    throw new InvalidOperationException(
-                        "无法从 datereceived 或 dailyno 生成 centreid 的年月部分。");
-                }
-            }
-
-            var key = (centreIdPrefix, yearMonth);
-            var sequence = sequenceByFormAndMonth.GetValueOrDefault(key) + 1;
-            sequenceByFormAndMonth[key] = sequence;
-            row["centreid"] = $"{centreIdPrefix}{yearMonth}-{sequence:D5}";
-        }
     }
 
     private sealed record OptionItem(int Id, string Description);

@@ -1,0 +1,87 @@
+@baseUrl = http://localhost:5032
+@medxToken = REPLACE_WITH_MEDX_JWT
+
+### Get complete final patient data (all database fields, original column names)
+GET {{baseUrl}}/api/Patient/getPatientdetailsFinalFullByDailyno?dailyNo=DR261106-0001
+Authorization: Bearer {{medxToken}}
+
+### Missing record: 404; duplicate dailyNo: 409
+GET {{baseUrl}}/api/Patient/getPatientdetailsFinalFullByDailyno?dailyNo=NONEXISTENT_TEST_DAILYNO
+Authorization: Bearer {{medxToken}}
+
+### Missing dailyNo: 400
+GET {{baseUrl}}/api/Patient/getPatientdetailsFinalFullByDailyno
+Authorization: Bearer {{medxToken}}
+
+### Partial update. Omitted or null fields retain their current values.
+# Requires exactly one final record and one input record for each inputtype 1 and 2.
+# userId is taken from JWT; inputType and userId are not request parameters.
+# dateReceived omitted/null retains its current value, never defaults to the current time.
+# Zero, empty strings and empty arrays are written. centreId cannot be changed through this API.
+# Dates preserve the supplied wall-clock time, without timezone conversion.
+# After local commit, enabled formtype rules select LIS, CRM or both.
+# No queue creation or remote creation. LIS requires confirmed prior synchronization.
+# CRM queued pending/succeeded/failed/unknown records use updateOnly=true.
+# CRM 404 NOT_FOUND is skipped and recorded as failed with diagnostics, never created.
+# No rule / missing queue / in_progress are skipped.
+# One target failure does not stop another. Inspect syncResults; lisSync remains for compatibility.
+# Remote failures return 502, state/rule failures 500, with localDatabaseUpdated=true.
+# One matching LIS sync record with sync_status=succeeded, or unknown with remote_record_id=centreid,
+# triggers automatic token retrieval,
+# PATCH UpdateOrder, then PATCH UpdateOrderPatient with the nested patient object.
+# No record, in_progress, or another ineligible state returns 200 with lisSync.status=skipped.
+# LIS failure returns 502 and localDatabaseUpdated=true; the queue is marked unknown when possible.
+POST {{baseUrl}}/api/Patient/updatePatientdetailsFinalByDailyno
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "dailyNo": "DR261106-0001",
+  "formType": "DR",
+  "patientNameEn": "TEST PATIENT",
+  "patientNameChi": null,
+  "gender": "F",
+  "dateOfBirth": "1990-01-02T00:00:00+08:00",
+  "age": 36,
+  "hkidNo": null,
+  "passportNo": null,
+  "mobile": null,
+  "refCustOrDr": "DOC",
+  "patientRefNo": null,
+  "billToCustOrDr": "BILL",
+  "speciment": "Blood",
+  "remarks": null,
+  "dateReceived": "2026-11-06T09:00:00+08:00",
+  "dateCollected": "2026-11-06T08:00:00+08:00",
+  "gestationalWeek": null,
+  "gestationalDay": null,
+  "pregnancy": null,
+  "ethnicOrigin": null,
+  "productCode": ["TEST01"],
+  "ivf": 0,
+  "redo": null,
+  "hxOfAbortion": 0,
+  "hold": 0,
+  "tbc": 0
+}
+
+### Update only remarks; all other patient fields retain their current values
+POST {{baseUrl}}/api/Patient/updatePatientdetailsFinalByDailyno
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "dailyNo": "DR261106-0001",
+  "formType": "DR",
+  "remarks": "Updated remarks"
+}
+
+### Invalid selector: 400 without database updates
+POST {{baseUrl}}/api/Patient/updatePatientdetailsFinalByDailyno
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "dailyNo": " ",
+  "formType": "DR"
+}

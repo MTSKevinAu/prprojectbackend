@@ -1,0 +1,163 @@
+@baseUrl = http://localhost:5032
+@medxToken = REPLACE_WITH_MEDX_JWT
+
+### Get an order directly from LIS; no local database changes
+GET {{baseUrl}}/api/Lis/order/MR2610-00001
+Authorization: Bearer {{medxToken}}
+
+### Nonexistent order: LIS normally returns HTTP 200 with result: null
+GET {{baseUrl}}/api/Lis/order/NONEXISTENT_TEST_CENTREID
+Authorization: Bearer {{medxToken}}
+
+### Update LIS order fields from latest local data (external PATCH /api/UpdateOrder/)
+POST {{baseUrl}}/api/Lis/updateorder
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "centreId": "MR2610-00001"
+}
+
+### Update LIS patient fields from latest local data (external PATCH /api/UpdateOrderPatient/)
+POST {{baseUrl}}/api/Lis/updateorderpatient
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "centreId": "MR2610-00001"
+}
+
+### Blank centreid: 400, no LIS update
+POST {{baseUrl}}/api/Lis/updateorderpatient
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "centreId": " "
+}
+
+### Prepare and preview orders without calling LIS (writes centreid and pending queue rows)
+# Uses the system JWT; LIS authentication uses server-configured credentials.
+# Accepts only SequenceDate, FormTypes and Status; no shared order parameters required.
+# The three parameters control centreid generation and queue preparation.
+# SequenceDate and FormTypes also filter returned records by sequence_date and formtype.
+# FormTypes is a non-empty array passed to p_formtypes text[]; defaults to ["DR"].
+# Each entry must be non-blank and at most 2 characters; null/empty arrays are rejected.
+# Then returns ALL columns of patientdetails_sync for that date and those form types, ordered by id.
+# No target-system or synchronization-state filter is applied to the response.
+# Matching already synchronized rows are included; null sequence_date rows are excluded.
+# Response contains totalCount and results; no patient payload or validation counts.
+# Actual createorders still sends only pending records.
+# Does not claim queue rows, increment attempt_count or change synchronization status.
+# This is a snapshot, not a reservation or guarantee of remote LIS validation.
+# SequenceDate is optional and defaults to database CURRENT_DATE.
+# Gaps or duplicates blocking centreid generation return HTTP 409 ProblemDetails.
+# detail contains the business error only, without PostgreSQL CONTEXT or stack traces.
+POST {{baseUrl}}/api/Lis/createorders/preview
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "SequenceDate": "2026-10-28",
+  "FormTypes": ["DR", "DC"],
+  "Status": "Matched"
+}
+
+### Synchronize DR and DC / Matched patients: submit create directly
+# Does not query existing orders; an exact same-LabId duplicate counts as succeeded.
+# Duplicate confirms the order exists, but does not update order or patient data.
+# Request exposes only SequenceDate, FormTypes and Status.
+# referringDoctorCode uses refcustordr; BillingDoctorCode uses billtocustordr.
+# Missing database doctor codes fail validation before submission.
+# SiteCode uses Lis:SiteCode; Priority=R and PaymentOption=A.
+# createdBy uses users.username; TestProfiles maps patientdetails_final.productcode,
+# with IsBillable=true. DOB is sent with AgeType=AGE when present.
+# Generates centreid using update_patientdetails_final_centreid, then reads
+# get_patientdetails_final_pending_sync. CreatedBy comes from users.username.
+# centreid is sent as LabId; the returned result.LabId is saved as remote_record_id.
+# Only pending LIS synchronization records are submitted. Stops on the first failure.
+# HTTP 207 means a failure occurred; inspect Results and UnprocessedCount.
+# Patients are sent with AgeType=AGE and AgeUnit=Y.
+# Batch synchronization currently omits Patient.HKID.
+# SequenceDate is optional; when omitted, the database CURRENT_DATE is used.
+# Results include SyncId and CentreId. TotalCount includes only selected pending rows.
+# SkippedCount is zero because non-pending records are excluded by the function.
+# Sending claims each pending row as in_progress and increments attempt_count.
+# Success sets succeeded, synced_at and remote_record_id; rejection sets failed.
+# Uncertain outcomes set unknown; stale in_progress also requires reconciliation.
+# Failed/unknown records are not automatically retried; review before resetting to pending.
+# Do not retry an uncertain LIS submission without checking LIS first.
+POST {{baseUrl}}/api/Lis/createorders
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "SequenceDate": "2026-10-28",
+  "FormTypes": ["DR", "DC"],
+  "Status": "Matched"
+}
+
+### Request an LIS token
+POST {{baseUrl}}/api/Lis/token
+Authorization: Bearer {{medxToken}}
+Content-Type: application/x-www-form-urlencoded
+
+username=REPLACE_WITH_LIS_USERNAME&password=REPLACE_WITH_URL_ENCODED_PASSWORD&grant_type=password
+
+### Request an LIS token using configured defaults
+POST {{baseUrl}}/api/Lis/token
+Authorization: Bearer {{medxToken}}
+Content-Type: application/x-www-form-urlencoded
+
+### Request an LIS token using configured defaults (GET, no parameters)
+GET {{baseUrl}}/api/Lis/token
+Authorization: ******
+
+### Synchronize one LIS order by submitting a create request directly
+# Does not query the remote order or update existing order/patient data.
+# Selects a unique patient by CentreId + TargetSystem through patientdetails_sync.
+# Only LIS is supported; other target systems return 400 before any submission.
+# Patient, DailyNo and CreatedBy come from patientdetails_final and users.
+# ReferringDoctorCode uses refcustordr; BillingDoctorCode uses billtocustordr.
+# Missing database doctor codes fail validation before submission.
+# Request exposes only CentreId and TargetSystem, with no shared order parameters.
+# Uses server defaults: SiteCode=LAB, Priority=R, PaymentOption=A.
+# TestProfiles and Samples are omitted.
+# HKID is omitted, consistently with batch synchronization.
+# No match returns 404; ambiguous matches or non-pending state return 409.
+# Only pending records may be sent; LabId is populated from the queued centreid.
+# A LIS error "Duplicate Data: <same centreid>" counts as already synchronized.
+# Supports plain text, a JSON string or a JSON error object, including HTTP 200 responses.
+# Returns 200 with alreadySynced=true; saves succeeded, synced_at and remote_record_id.
+# The original LIS HTTP status is retained in last_http_status; batches continue.
+POST {{baseUrl}}/api/Lis/createorder
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "CentreId": "MR2610-00001",
+  "TargetSystem": "LIS"
+}
+
+### Retry one failed or unknown LIS order using current patientdetails_final data
+# The synchronization status belongs to patientdetails_sync, not patientdetails_final.
+# Request exposes only CentreId and TargetSystem, with no shared order parameters.
+# Uses the same patient selection, database mapping and order validation as createorder.
+# Other order parameters use server defaults (SiteCode=LAB, Priority=R, PaymentOption=A).
+# Does not regenerate centreid; sends the original centreid as LabId.
+# Directly submits CreateOrder without checking the remote order first.
+# A duplicate confirms order existence only, not that patient data was updated.
+# Atomically claims failed/unknown -> in_progress and increments attempt_count.
+# Other states (pending/succeeded/in_progress) return 409 without submitting.
+# Unknown retries reuse the original LabId so LIS uniqueness prevents duplicate orders.
+# Success or an exact same-LabId duplicate saves succeeded and remote_record_id.
+# Rejection saves failed; uncertain outcomes save unknown and require reconciliation.
+# Does not reset the row to pending or automatically retry other records.
+POST {{baseUrl}}/api/Lis/createorder/retry
+Authorization: Bearer {{medxToken}}
+Content-Type: application/json
+
+{
+  "CentreId": "MR2610-00002",
+  "TargetSystem": "LIS"
+}

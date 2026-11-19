@@ -1,0 +1,320 @@
+@baseUrl = http://localhost:5032
+@jwtToken = REPLACE_WITH_MEDX_JWT
+@centreId = MR2610-00001
+@ruleId = 1
+
+### Batch-sync selected orders; CRM and LIS share one batchId according to each patient's rules
+# Prepares the inclusive range for all enabled rules before resolving selected centreIds.
+# Existing succeeded orders are updated. Inspect both target and order outcomes on HTTP 207.
+POST {{baseUrl}}/api/Sync/orderpatients
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "2026-11-10",
+  "end_date": "2026-11-11",
+  "centreIds": ["MR2611-00001", "MR2611-00002", "MC2611-00001"]
+}
+
+### Invalid empty batch: 400, no synchronization
+POST {{baseUrl}}/api/Sync/orderpatients
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "2026-11-10",
+  "end_date": "2026-11-11",
+  "centreIds": []
+}
+
+### Missing batch dates: 400, no preparation or synchronization
+POST {{baseUrl}}/api/Sync/orderpatients
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreIds": ["MR2611-00001"]
+}
+
+### Reversed batch dates: 400, no preparation or synchronization
+POST {{baseUrl}}/api/Sync/orderpatients
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "2026-11-11",
+  "end_date": "2026-11-10",
+  "centreIds": ["MR2611-00001"]
+}
+
+### History from the globally latest completed batch; no count means all its records
+# Record targetSystem comes from history, not batches; batch metadata has no targetSystem.
+# Without a target filter, an empty latest batch still returns metadata.
+# Uses get_latest_patientdetails_sync_batch; only the last attempt per sync_id is returned.
+# History payloads are not returned. Older batches and unfinished batches are not selected.
+GET {{baseUrl}}/api/Sync/recent
+Authorization: Bearer {{jwtToken}}
+
+### Filter history in the globally latest batch; no matching target returns empty results and batches, with no fallback
+GET {{baseUrl}}/api/Sync/recent?count=10&targetSystem=CRM
+Authorization: Bearer {{jwtToken}}
+
+### Invalid count: 400
+GET {{baseUrl}}/api/Sync/recent?count=0
+Authorization: Bearer {{jwtToken}}
+
+### Invalid system: 400
+GET {{baseUrl}}/api/Sync/recent?targetSystem=OTHER
+Authorization: Bearer {{jwtToken}}
+
+### Count all synchronization queue rows across all dates and target systems
+GET {{baseUrl}}/api/Sync/statistics
+Authorization: Bearer {{jwtToken}}
+
+### Generate centreids and preview queues in an inclusive date range; no LIS/CRM upload
+# Prepares centreids and queues for enabled rules before reading the preview.
+# Each result is one order/target pair; existing synchronization states are retained.
+POST {{baseUrl}}/api/Sync/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "2026-11-10",
+  "end_date": "2026-11-11"
+}
+
+### Missing required date: 400, no centreid generation or queue writes
+POST {{baseUrl}}/api/Sync/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{}
+
+### Invalid date: 400, no centreid generation or queue writes
+POST {{baseUrl}}/api/Sync/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "not-a-date",
+  "end_date": "2026-11-11"
+}
+
+### Reversed date range: 400, no centreid generation or queue writes
+POST {{baseUrl}}/api/Sync/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "start_date": "2026-11-11",
+  "end_date": "2026-11-10"
+}
+
+### Get a rule by generated id
+GET {{baseUrl}}/api/Sync/rules/{{ruleId}}
+Authorization: Bearer {{jwtToken}}
+
+### Update enabled state by id
+PUT {{baseUrl}}/api/Sync/rules/{{ruleId}}
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "isEnabled": false
+}
+
+### Delete a rule by id; queue entries remain unchanged
+DELETE {{baseUrl}}/api/Sync/rules/{{ruleId}}
+Authorization: Bearer {{jwtToken}}
+
+### Invalid id: 400
+GET {{baseUrl}}/api/Sync/rules/0
+Authorization: Bearer {{jwtToken}}
+
+### List all routing rules (includes disabled)
+GET {{baseUrl}}/api/Sync/rules
+Authorization: Bearer {{jwtToken}}
+
+### Filter rules by formType
+GET {{baseUrl}}/api/Sync/rules?formType=DR
+Authorization: Bearer {{jwtToken}}
+
+### Get a rule by composite key
+GET {{baseUrl}}/api/Sync/rules/DR/LIS
+Authorization: Bearer {{jwtToken}}
+
+### Create a rule; duplicate key returns 409
+POST {{baseUrl}}/api/Sync/rules
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "formType": "DR",
+  "targetSystem": "LIS",
+  "isEnabled": true
+}
+
+### Disable a rule; existing queue rows are unchanged
+PUT {{baseUrl}}/api/Sync/rules/DR/LIS
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "isEnabled": false
+}
+
+### Missing isEnabled: 400, no database write
+PUT {{baseUrl}}/api/Sync/rules/DR/LIS
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{}
+
+### Delete only the routing rule; 200 with success/message/formType/targetSystem
+# Repeating the request after deletion returns 404, not a success response.
+DELETE {{baseUrl}}/api/Sync/rules/DR/LIS
+Authorization: Bearer {{jwtToken}}
+
+### Route this patient using enabled patientdetails_sync_rules; configured tokens only
+# Writes to every enabled system. Inspect each result even when HTTP 207 is returned.
+# No formtype/targetSystem input: read formtype from the unique final patient.
+POST {{baseUrl}}/api/Sync/orderpatient
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": "{{centreId}}"
+}
+
+### Invalid rule-routed selection: 400, no synchronization
+POST {{baseUrl}}/api/Sync/orderpatient
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": " "
+}
+
+### LIS configured token
+GET {{baseUrl}}/api/Sync/lis/token
+Authorization: Bearer {{jwtToken}}
+
+### LIS token using configured form defaults
+POST {{baseUrl}}/api/Sync/lis/token
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/x-www-form-urlencoded
+
+### Query LIS order
+GET {{baseUrl}}/api/Sync/lis/order/{{centreId}}
+Authorization: Bearer {{jwtToken}}
+
+### Prepare LIS queue; local centreids/queue may be changed, no remote writes
+POST {{baseUrl}}/api/Sync/lis/createorders/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "SequenceDate": "2026-11-09",
+  "FormTypes": ["DR"],
+  "Status": "Matched"
+}
+
+### Submit one pending LIS order if its stored formtype has an enabled LIS rule
+POST {{baseUrl}}/api/Sync/lis/createorder
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": "{{centreId}}"
+}
+
+### Retry a failed/unknown create; verify uncertain remote outcomes before sending
+# A matching duplicate confirms order existence, not patient update success.
+POST {{baseUrl}}/api/Sync/lis/createorder/retry
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "CentreId": "{{centreId}}",
+  "TargetSystem": "LIS"
+}
+
+### Submit pending LIS orders; stops on first failure, inspect HTTP 207 results
+POST {{baseUrl}}/api/Sync/lis/createorders
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "SequenceDate": "2026-11-09",
+  "FormTypes": ["DR"],
+  "Status": "Matched"
+}
+
+### Update LIS Order from latest local data
+POST {{baseUrl}}/api/Sync/lis/updateorder
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": "{{centreId}}"
+}
+
+### Update LIS Patient from latest local data
+POST {{baseUrl}}/api/Sync/lis/updateorderpatient
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": "{{centreId}}"
+}
+
+### Invalid LIS update: 400, no remote writes
+POST {{baseUrl}}/api/Sync/lis/updateorderpatient
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreId": " "
+}
+
+### CRM configured token
+GET {{baseUrl}}/api/Sync/crm/token
+Authorization: Bearer {{jwtToken}}
+
+### CRM token using configured form defaults
+POST {{baseUrl}}/api/Sync/crm/token
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/x-www-form-urlencoded
+
+### Prepare CRM queue; no Salesforce calls
+POST {{baseUrl}}/api/Sync/crm/syncPatientdetailsFinal/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "sequenceDate": "2026-11-09",
+  "formTypes": ["DR"],
+  "status": "Matched"
+}
+
+### Sync a selected queued patient to CRM using configured credentials
+POST {{baseUrl}}/api/Sync/crm/syncPatientdetailsFinal
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreid": "{{centreId}}",
+  "targetSystem": "CRM"
+}
+
+### Invalid CRM preview: 400, no database writes
+POST {{baseUrl}}/api/Sync/crm/syncPatientdetailsFinal/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "formTypes": []
+}
+
+### Missing JWT: 401
+GET {{baseUrl}}/api/Sync/crm/token

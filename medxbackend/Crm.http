@@ -1,0 +1,100 @@
+@baseUrl = http://localhost:5032
+@jwtToken = REPLACE_WITH_YOUR_JWT
+@clientId = REPLACE_WITH_YOUR_CONSUMER_KEY
+@clientSecret = REPLACE_WITH_YOUR_CONSUMER_SECRET
+
+### Prepare CRM queue and preview records (changes local centreids/queue; no Salesforce calls)
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "sequenceDate": "2026-10-29",
+  "formTypes": ["DR"],
+  "status": "Matched"
+}
+
+### Empty preview form types: 400 (no database changes)
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal/preview
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "formTypes": []
+}
+
+### Upsert a final patient selected by centreid and CRM queue membership
+# Replace with a centreid returned by CRM preview.
+# This request writes to CRM.
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreid": "MR2610-00001",
+  "targetSystem": "CRM"
+}
+
+### Empty centreid: 400 (no CRM writes)
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreid": " ",
+  "targetSystem": "CRM"
+}
+
+### Unsupported target system: 400 (no CRM writes)
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreid": "MR2610-00001",
+  "targetSystem": "LIS"
+}
+
+### Missing centreid or CRM queue membership: 404 (no CRM writes)
+POST {{baseUrl}}/api/Crm/syncPatientdetailsFinal
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/json
+
+{
+  "centreid": "NONEXISTENT_TEST_CENTREID",
+  "targetSystem": "CRM"
+}
+
+### GET token using server-configured credentials (no body or query credentials)
+GET {{baseUrl}}/api/Crm/token
+Authorization: Bearer {{jwtToken}}
+
+### GET token without JWT: 401
+GET {{baseUrl}}/api/Crm/token
+
+### Get a Salesforce token using form credentials (requires Crm:BaseUrl)
+POST {{baseUrl}}/api/Crm/token
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id={{clientId}}&client_secret={{clientSecret}}
+
+### Get a Salesforce token using server-configured credentials
+# Reads BaseUrl, grant_type, client_id, and client_secret from the Crm JSON section.
+POST {{baseUrl}}/api/Crm/token
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/x-www-form-urlencoded
+
+
+### Unsupported grant type: 400
+POST {{baseUrl}}/api/Crm/token
+Authorization: Bearer {{jwtToken}}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password
+
+### Missing JWT: 401
+POST {{baseUrl}}/api/Crm/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials

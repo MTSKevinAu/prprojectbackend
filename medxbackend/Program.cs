@@ -4,8 +4,11 @@ using medxbackend.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
+using PdfSharp.Fonts;
 using Serilog;
 using System.Text;
+
+GlobalFontSettings.FontResolver = new NotoSansFontResolver();
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,9 +24,64 @@ builder.Host.UseSerilog((context, configuration) => configuration
 
 // Add services to the container.
 builder.Services.AddControllersWithViews();
+builder.Services.AddScoped<SyncApiActionContext>();
+builder.Services.AddHttpClient("Crm", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+})
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        AllowAutoRedirect = false
+    });
+builder.Services.AddHttpClient("Lis", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+})
+    .ConfigurePrimaryHttpMessageHandler(services =>
+    {
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        };
+        var configuration = services.GetRequiredService<IConfiguration>();
+        if (!configuration.GetValue("Lis:ValidateServerCertificate", true))
+        {
+            handler.ServerCertificateCustomValidationCallback =
+                HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+
+        return handler;
+    });
 builder.Services.AddScoped<DbHelper>();
+builder.Services.AddScoped<ILisSyncApiService, LisSyncApiService>();
+builder.Services.AddSingleton<LisAccessTokenCache>();
+builder.Services.AddScoped<ICrmSyncApiService, CrmSyncApiService>();
+builder.Services.AddScoped<ISyncRoutingRepository, SyncRoutingRepository>();
+builder.Services.AddScoped<ISyncHistoryService, SyncHistoryService>();
+builder.Services.AddScoped<IPatientSyncRoutingService, PatientSyncRoutingService>();
+builder.Services.AddScoped<ISyncRuleService, SyncRuleService>();
+builder.Services.AddScoped<SyncFailureDetails>();
+builder.Services.AddScoped<IPatientDetailsExportService, PatientDetailsExportService>();
+builder.Services.AddScoped<IPatientDetailsFinalUpdateService, PatientDetailsFinalUpdateService>();
+builder.Services.AddScoped<ILisFinalPatientUpdateService, LisFinalPatientUpdateService>();
+builder.Services.AddScoped<IPatientDetailsFinalQueryService, PatientDetailsFinalQueryService>();
+builder.Services.AddScoped<ICrmSyncService, CrmSyncService>();
+builder.Services.AddScoped<ICrmPreviewService, CrmPreviewService>();
 builder.Services.AddSingleton<ILogService, LogService>();
 builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+builder.Services.AddSingleton<IBarcodeService, BarcodeService>();
+builder.Services.AddOptions<BarcodeOptions>()
+    .Bind(builder.Configuration.GetSection(BarcodeOptions.SectionName))
+    .Validate(options =>
+        string.Equals(options.Format, "Code39", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(options.Format, "Code128", StringComparison.OrdinalIgnoreCase),
+        "Barcode:Format must be Code39 or Code128.")
+    .ValidateOnStart();
+builder.Services.Configure<NetworkPrinterOptions>(
+    builder.Configuration.GetSection(NetworkPrinterOptions.SectionName));
+builder.Services.AddSingleton<IReceiptPrinterService, ReceiptPrinterService>();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("Vite", policy =>

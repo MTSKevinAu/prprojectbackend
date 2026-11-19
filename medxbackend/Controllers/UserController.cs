@@ -57,9 +57,29 @@ public sealed class UserController : ControllerBase
 
             var userId = await _dbHelper.ExecuteScalarAsync<string>(
                 """
-                INSERT INTO users (username, email, password_hash, createdate)
-                VALUES (@username, @email, @password_hash, CURRENT_TIMESTAMP)
-                RETURNING id
+                WITH labadmin_role AS
+                (
+                    SELECT id
+                    FROM public.roles
+                    WHERE code = 'labadmin'
+                ),
+                new_user AS
+                (
+                    INSERT INTO public.users (username, email, password_hash, createdate)
+                    SELECT @username, @email, @password_hash, CURRENT_TIMESTAMP
+                    FROM labadmin_role
+                    RETURNING id
+                ),
+                assigned_role AS
+                (
+                    INSERT INTO public.user_roles (user_id, role_id)
+                    SELECT new_user.id, labadmin_role.id
+                    FROM new_user
+                    CROSS JOIN labadmin_role
+                    RETURNING user_id
+                )
+                SELECT user_id::text
+                FROM assigned_role
                 """,
                 [
                     new NpgsqlParameter("username", request.Username.Trim()),
@@ -67,6 +87,14 @@ public sealed class UserController : ControllerBase
                     new NpgsqlParameter("password_hash", CreateMd5PasswordHash(request.Password))
                 ],
                 cancellationToken);
+
+            if (userId is null)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    message = "Labadmin 角色未配置，无法完成注册"
+                });
+            }
 
             return StatusCode(StatusCodes.Status201Created, new
             {

@@ -7,13 +7,24 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Fonts\NotoSans-Regular.ttf" />
+    <EmbeddedResource Include="Fonts\NotoSans-Bold.ttf" />
+    <EmbeddedResource Include="Fonts\NotoSansSC-VF.ttf" />
+    <None Update="Fonts\OFL.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="Fonts\OFL-NotoCJK.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.0" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageReference Include="Npgsql" Version="10.0.0" />
+    <PackageReference Include="PDFsharp" Version="6.2.0" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.151.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.0.1" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="8.0.2" />
+    <PackageReference Include="ZXing.Net.Bindings.SkiaSharp" Version="0.16.24" />
   </ItemGroup>
 
 </Project>
